@@ -57,10 +57,10 @@ class MainActivity : Activity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding(40, 40, 40, 40)
             addView(status); addView(spinner)
-            addView(btn("Kumonekta sa Smart Cane") { connect() })
+            addView(btn("Connected Smart Cane") { connect() })
             addView(contact)
-            addView(btn("I-save ang contact") {
-                prefs.edit().putString("num", contact.text.toString().trim()).apply(); note("Na-save ang contact")
+            addView(btn("Save Contact") {
+                prefs.edit().putString("num", contact.text.toString().trim()).apply(); note("Saved Contact")
             })
             addView(btn("Test SMS") { isTest = true; sendSms() })
             addView(btn("Test alert sa device") { send("TEST") })
@@ -123,7 +123,7 @@ class MainActivity : Activity() {
             send("SMS_FAIL"); note("Walang contact o SMS permission"); return
         }
         val loc = coords?.let { " https://maps.google.com/?q=$it" }.orEmpty()
-        val msg = (if (isTest) "[TEST] " else "") + "SOS! Kailangan ng tulong." + loc
+        val msg = (if (isTest) "[TEST] " else "") + "SOS! I need help." + loc
         val pi = PendingIntent.getBroadcast(this, 0, Intent(sentAction).setPackage(packageName),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         try {
