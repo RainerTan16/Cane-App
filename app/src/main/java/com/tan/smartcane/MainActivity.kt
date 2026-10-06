@@ -78,9 +78,7 @@ class MainActivity : Activity() {
             addView(btn("I-save ang contact") {
                 prefs.edit().putString("num", contact.text.toString().trim()).apply(); note("Na-save ang contact")
             })
-            addView(btn("Test SMS") { isTest = true; sendSms() })
-            addView(btn("Test alert sa device") { send("TEST") })
-            addView(btn("Test suara (AirPods)") { speak(42) })
+            
             addView(log)
         }
         setContentView(ScrollView(this).apply { addView(root) })
