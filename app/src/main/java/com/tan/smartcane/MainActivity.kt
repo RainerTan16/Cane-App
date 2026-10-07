@@ -32,6 +32,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.view.accessibility.AccessibilityManager
 import android.view.inputmethod.InputMethodManager
 import android.widget.ArrayAdapter
 import android.widget.Button
@@ -73,11 +74,14 @@ class MainActivity : Activity() {
     private val maxRetry = 5
 
     private lateinit var prefs: SharedPreferences
+    private lateinit var rootView: View
     private lateinit var statusDot: View
     private lateinit var statusText: TextView
     private lateinit var spinner: Spinner
     private lateinit var btnConnect: Button
+    private lateinit var btnVoice: Button
     private lateinit var contact: EditText
+    private lateinit var latestCard: LinearLayout
     private lateinit var latestTitle: TextView
     private lateinit var latestMeta: TextView
     private lateinit var historyBox: LinearLayout
@@ -93,7 +97,7 @@ class MainActivity : Activity() {
 
     private var coords: String? = null
     private var smsRetries = 0
-    private var isTest = false
+    private var voiceGuide = true
 
     private var tts: TextToSpeech? = null
     @Volatile private var ttsReady = false
@@ -110,19 +114,43 @@ class MainActivity : Activity() {
     // ---------- SMS result ----------
     private val smsResult = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
-            if (resultCode == Activity.RESULT_OK) {
-                smsRetries = 0
-                send("SMS_OK")
-                addEntry("sms", "SMS naipadala", "SMS_OK")
-            } else {
-                send("SMS_FAIL")
-                addEntry("sms", "SMS pumalya", "SMS_FAIL")
-                if (!isTest && smsRetries < 3) {
-                    smsRetries++
-                    ui.postDelayed({ sendSms() }, 1500)
-                }
-            }
+            val test = i.getBooleanExtra("test", false)
+            smsDone(resultCode == Activity.RESULT_OK, test, "", true)
         }
+    }
+
+    // ================= ACCESSIBILITY =================
+    private fun touchExploration(): Boolean {
+        val am = getSystemService(AccessibilityManager::class.java)
+        return am != null && am.isTouchExplorationEnabled
+    }
+
+    // Isang paraan lang ng pagsasalita para sa mga mensahe ng app:
+    // - kung naka-ON ang TalkBack: dadaan sa TalkBack (walang dobleng boses)
+    // - kung hindi: boses ng app, kung naka-ON ang "Gabay na boses"
+    private fun announce(text: String) {
+        ui.post {
+            if (touchExploration()) rootView.announceForAccessibility(text)
+            else if (voiceGuide) speakText(text, "local", false)
+        }
+    }
+
+    // Sinasabi ang pangalan ng button kapag pinindot, kung walang TalkBack.
+    private fun guide(label: String) {
+        if (!touchExploration() && voiceGuide) speakText(label, "local", true)
+    }
+
+    private fun voiceLabel(): String =
+        if (voiceGuide) "Gabay na boses: naka-ON" else "Gabay na boses: naka-OFF"
+
+    private fun toggleVoice() {
+        voiceGuide = !voiceGuide
+        prefs.edit().putBoolean("voice", voiceGuide).apply()
+        val msg = voiceLabel()
+        btnVoice.text = msg
+        btnVoice.contentDescription = msg
+        if (touchExploration()) rootView.announceForAccessibility(msg)
+        else speakText(msg, "local", true)
     }
 
     // ================= UI =================
@@ -168,9 +196,10 @@ class MainActivity : Activity() {
         return v
     }
 
-    private fun button(label: String, primary: Boolean, onClick: () -> Unit): Button {
+    private fun button(label: String, primary: Boolean, speakLabel: Boolean = true, onClick: () -> Unit): Button {
         val b = Button(this)
         b.text = label
+        b.contentDescription = label
         b.isAllCaps = false
         b.textSize = 18f
         b.typeface = Typeface.DEFAULT_BOLD
@@ -183,8 +212,15 @@ class MainActivity : Activity() {
         val lp = LinearLayout.LayoutParams(match, wrap)
         lp.topMargin = dp(10)
         b.layoutParams = lp
-        b.setOnClickListener { onClick() }
+        b.setOnClickListener {
+            if (speakLabel) guide(label)
+            onClick()
+        }
         return b
+    }
+
+    private fun hideFromReader(v: View) {
+        v.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
     }
 
     private fun buildUi() {
@@ -196,7 +232,7 @@ class MainActivity : Activity() {
         header.setPadding(dp(16), dp(10), dp(16), dp(10))
         val logo = ImageView(this)
         logo.setImageResource(R.drawable.ic_launcher_foreground)
-        logo.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        hideFromReader(logo)
         header.addView(logo, LinearLayout.LayoutParams(dp(56), dp(56)))
         val title = TextView(this)
         title.text = "Smart Cane"
@@ -223,7 +259,7 @@ class MainActivity : Activity() {
         dot.shape = GradientDrawable.OVAL
         dot.setColor(gray)
         statusDot.background = dot
-        statusDot.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        hideFromReader(statusDot)
         val dotLp = LinearLayout.LayoutParams(dp(14), dp(14))
         dotLp.rightMargin = dp(10)
         row.addView(statusDot, dotLp)
@@ -232,33 +268,37 @@ class MainActivity : Activity() {
         statusText.textSize = 20f
         statusText.setTextColor(navy)
         statusText.typeface = Typeface.DEFAULT_BOLD
-        statusText.accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         row.addView(statusText)
         conn.addView(row)
-        conn.addView(caption("Pumili ng device"))
+        val devCaption = caption("Pumili ng device")
+        conn.addView(devCaption)
         spinner = Spinner(this)
-        spinner.contentDescription = "Pumili ng Bluetooth device"
+        spinner.id = View.generateViewId()
+        devCaption.labelFor = spinner.id
         conn.addView(spinner, LinearLayout.LayoutParams(match, dp(52)))
         btnConnect = button("Kumonekta sa Smart Cane", true) { startConnect() }
         conn.addView(btnConnect)
         conn.addView(button("Idiskonekta", false) { disconnectByUser() })
         content.addView(conn)
 
-        // --- Huling alerto ---
+        // --- Huling alerto (iisang grupo para sa TalkBack) ---
         val latest = LinearLayout(this)
+        latestCard = latest
         latest.orientation = LinearLayout.VERTICAL
         latest.background = rounded(navy, 0, 18)
         latest.setPadding(dp(18), dp(16), dp(18), dp(16))
         val latestLp = LinearLayout.LayoutParams(match, wrap)
         latestLp.topMargin = dp(12)
         latest.layoutParams = latestLp
+        latest.isFocusable = true
+        latest.contentDescription = "Huling alerto: wala pang alerto"
         val lbl = TextView(this)
         lbl.text = "HULING ALERTO"
         lbl.textSize = 12f
         lbl.setTextColor(Color.parseColor("#8EE0D4"))
         lbl.typeface = Typeface.DEFAULT_BOLD
         lbl.letterSpacing = 0.1f
-        if (Build.VERSION.SDK_INT >= 28) lbl.isAccessibilityHeading = true
+        hideFromReader(lbl)
         latest.addView(lbl)
         latestTitle = TextView(this)
         latestTitle.text = "Wala pang alerto"
@@ -266,12 +306,14 @@ class MainActivity : Activity() {
         latestTitle.setTextColor(Color.WHITE)
         latestTitle.typeface = Typeface.DEFAULT_BOLD
         latestTitle.setPadding(0, dp(6), 0, dp(6))
+        hideFromReader(latestTitle)
         latest.addView(latestTitle)
         latestMeta = TextView(this)
         latestMeta.text = "Hintayin ang alerto mula sa tungkod"
         latestMeta.textSize = 14f
         latestMeta.setTextColor(Color.parseColor("#A8B5C8"))
         latestMeta.typeface = Typeface.MONOSPACE
+        hideFromReader(latestMeta)
         latest.addView(latestMeta)
         content.addView(latest)
 
@@ -291,8 +333,12 @@ class MainActivity : Activity() {
         // --- Emergency contact ---
         val cc = card()
         cc.addView(sectionTitle("EMERGENCY CONTACT"))
+        val contactCaption = caption("Numero ng emergency contact")
+        cc.addView(contactCaption)
         contact = EditText(this)
-        contact.hint = "Numero ng emergency contact"
+        contact.id = View.generateViewId()
+        contactCaption.labelFor = contact.id
+        contact.hint = "Halimbawa: 09171234567"
         contact.textSize = 20f
         contact.inputType = InputType.TYPE_CLASS_PHONE
         contact.setSingleLine(true)
@@ -300,14 +346,18 @@ class MainActivity : Activity() {
         contact.setText(prefs.getString("num", ""))
         cc.addView(contact, LinearLayout.LayoutParams(match, wrap))
         cc.addView(button("I-save ang contact", true) { saveContact() })
-        cc.addView(button("Test SMS", false) { isTest = true; sendSms() })
+        cc.addView(button("Test SMS", false) { sendSms(true) })
         content.addView(cc)
 
-        // --- Pagsubok ---
+        // --- Tunog at pagsubok ---
         val tc = card()
-        tc.addView(sectionTitle("PAGSUBOK"))
-        tc.addView(button("Test alert sa device", false) { send("TEST") })
-        tc.addView(button("Test suara (AirPods)", false) { speakText("Nakakonekta ang Smart Cane", "local") })
+        tc.addView(sectionTitle("TUNOG AT PAGSUBOK"))
+        btnVoice = button(voiceLabel(), false, false) { toggleVoice() }
+        tc.addView(btnVoice)
+        tc.addView(button("Test alert sa device", false) { testDevice() })
+        tc.addView(button("Test suara", false) {
+            speakText("Pagsubok ng boses. Kung naririnig mo ito, gumagana ang tunog.", "local", false)
+        })
         content.addView(tc)
 
         val scroll = ScrollView(this)
@@ -319,10 +369,12 @@ class MainActivity : Activity() {
         root.setBackgroundColor(bg)
         root.addView(header, LinearLayout.LayoutParams(match, wrap))
         root.addView(scroll, LinearLayout.LayoutParams(match, 0, 1f))
+        rootView = root
         setContentView(root)
     }
 
-    private fun setStatus(st: St, text: String) {
+    // say = True: sasabihin ang mensahe (TalkBack o boses ng app). Hindi na gumagamit ng live region.
+    private fun setStatus(st: St, text: String, say: Boolean) {
         ui.post {
             statusText.text = text
             val c = when (st) {
@@ -333,6 +385,7 @@ class MainActivity : Activity() {
             }
             (statusDot.background as GradientDrawable).setColor(c)
         }
+        if (say) announce(text)
     }
 
     private fun setBusy(busy: Boolean) {
@@ -349,6 +402,7 @@ class MainActivity : Activity() {
             if (type == "audio" || type == "sos") {
                 latestTitle.text = title
                 latestMeta.text = "$code  |  $time"
+                latestCard.contentDescription = "Huling alerto: $title, $time"
             }
             historyEmpty.visibility = View.GONE
             historyBox.addView(makeRow(type, title, code, time), 0)
@@ -371,6 +425,7 @@ class MainActivity : Activity() {
         row.isFocusable = true
         val stripe = View(this)
         stripe.setBackgroundColor(color)
+        hideFromReader(stripe)
         val stripeLp = LinearLayout.LayoutParams(dp(5), dp(36))
         stripeLp.rightMargin = dp(10)
         row.addView(stripe, stripeLp)
@@ -380,18 +435,21 @@ class MainActivity : Activity() {
         t1.text = title
         t1.textSize = 16f
         t1.setTextColor(navy)
+        hideFromReader(t1)
         col.addView(t1)
         val t2 = TextView(this)
         t2.text = code
         t2.textSize = 12f
         t2.setTextColor(color)
         t2.typeface = Typeface.MONOSPACE
+        hideFromReader(t2)
         col.addView(t2)
         row.addView(col, LinearLayout.LayoutParams(0, wrap, 1f))
         val t3 = TextView(this)
         t3.text = time
         t3.textSize = 12f
         t3.setTextColor(gray)
+        hideFromReader(t3)
         row.addView(t3)
         return row
     }
@@ -402,6 +460,7 @@ class MainActivity : Activity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) // pansamantala hangga't walang foreground service
         window.statusBarColor = navy
         prefs = getSharedPreferences("cfg", MODE_PRIVATE)
+        voiceGuide = prefs.getBoolean("voice", true)
         buildUi()
 
         val f = IntentFilter(sentAction)
@@ -457,25 +516,25 @@ class MainActivity : Activity() {
 
     private fun startConnect() {
         if (!hasBtPermission()) {
-            setStatus(St.ERROR, "Kailangan ng Bluetooth permission")
+            setStatus(St.ERROR, "Kailangan ng Bluetooth permission", true)
             requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT), 2)
             return
         }
         val ad = btAdapter()
-        if (ad == null) { setStatus(St.ERROR, "Walang Bluetooth ang phone"); return }
-        if (!ad.isEnabled) { setStatus(St.ERROR, "I-ON muna ang Bluetooth ng phone"); return }
+        if (ad == null) { setStatus(St.ERROR, "Walang Bluetooth ang phone", true); return }
+        if (!ad.isEnabled) { setStatus(St.ERROR, "I-ON muna ang Bluetooth ng phone", true); return }
         loadDevices()
         val d = devices.getOrNull(spinner.selectedItemPosition)
-        if (d == null) { setStatus(St.ERROR, "I-pair muna ang SmartCane sa Bluetooth settings"); return }
+        if (d == null) { setStatus(St.ERROR, "I-pair muna ang SmartCane sa Bluetooth settings", true); return }
         wantConnected = true
         retryCount = 0
-        connectTo(d)
+        connectTo(d, true)
     }
 
-    private fun connectTo(d: BluetoothDevice) {
+    private fun connectTo(d: BluetoothDevice, loud: Boolean) {
         if (!connecting.compareAndSet(false, true)) return
         currentAddress = d.address
-        setStatus(St.CONNECTING, "Kumokonekta sa ${nameOf(d)}...")
+        setStatus(St.CONNECTING, "Kumokonekta sa ${nameOf(d)}...", loud)
         setBusy(true)
         thread {
             var s: BluetoothSocket? = null
@@ -488,7 +547,7 @@ class MainActivity : Activity() {
                 retryCount = 0
                 connecting.set(false)
                 setBusy(false)
-                setStatus(St.CONNECTED, "Nakakonekta: ${nameOf(d)}")
+                setStatus(St.CONNECTED, "Nakakonekta: ${nameOf(d)}", true)
                 addEntry("sys", "Nakakonekta: ${nameOf(d)}", "KONEKSYON")
                 send("APP_CONNECTED")
             } catch (e: Exception) {
@@ -514,19 +573,19 @@ class MainActivity : Activity() {
         setBusy(false)
         ui.post {
             addEntry("sys", "Nadiskonekta ($reason)", "KONEKSYON")
-            if (dropped) speakText("Nadiskonekta ang Smart Cane", "local")
             if (wantConnected && retryCount < maxRetry) {
                 retryCount++
-                setStatus(St.CONNECTING, "Susubukan ulit ($retryCount/$maxRetry)...")
+                setStatus(St.CONNECTING, "Susubukan ulit ($retryCount/$maxRetry)...", false)
+                if (dropped) announce("Nadiskonekta ang Smart Cane. Susubukan ulit.")
                 ui.postDelayed({
                     if (wantConnected && !connected) {
                         val d = devices.firstOrNull { it.address == currentAddress }
-                        if (d != null) connectTo(d) else setStatus(St.OFF, "Nadiskonekta")
+                        if (d != null) connectTo(d, false) else setStatus(St.OFF, "Nadiskonekta", true)
                     }
                 }, 5000)
             } else {
                 wantConnected = false
-                setStatus(St.OFF, "Nadiskonekta. Pindutin ang Kumonekta.")
+                setStatus(St.OFF, "Nadiskonekta. Pindutin ang Kumonekta.", true)
             }
         }
     }
@@ -537,7 +596,7 @@ class MainActivity : Activity() {
         closeSocket()
         connecting.set(false)
         setBusy(false)
-        setStatus(St.OFF, "Nadiskonekta")
+        setStatus(St.OFF, "Nadiskonekta", true)
         addEntry("sys", "Idiniskonekta mo ang device", "KONEKSYON")
     }
 
@@ -561,6 +620,17 @@ class MainActivity : Activity() {
         } catch (_: Exception) {}
     }
 
+    private fun testDevice() {
+        if (!connected) {
+            announce("Hindi pa nakakonekta sa Smart Cane")
+            addEntry("sys", "Hindi pa nakakonekta", "TEST")
+            return
+        }
+        send("TEST")
+        addEntry("sys", "Test alert ipinadala", "TEST")
+        announce("Ipinadala ang test alert")
+    }
+
     // ================= MENSAHE MULA SA TUNGKOD =================
     // "AUDIO:0008", "SOS", "SOS:lat,lng"
     private fun handle(l: String) {
@@ -576,10 +646,9 @@ class MainActivity : Activity() {
             ui.post { speak(n) }
         } else if (l.startsWith("SOS")) {
             coords = l.substringAfter(':', "").ifBlank { null }
-            isTest = false
             smsRetries = 0
             addEntry("sos", "SOS mula sa tungkod", "SOS")
-            ui.post { sendSms() }
+            ui.post { sendSms(false) }
         } else {
             addEntry("sys", l.take(60), "DEVICE")
         }
@@ -609,18 +678,20 @@ class MainActivity : Activity() {
     }
 
     // Kung may res/raw/a0008.mp3, iyon ang tutugtog. Kung wala, boses ng phone (TTS).
+    // Ang alerto mula sa tungkod ay laging may prayoridad (hindi dumadaan sa TalkBack).
     private fun speak(n: Int) {
         val res = resources.getIdentifier(String.format(Locale.US, "a%04d", n), "raw", packageName)
-        if (res != 0) playRaw(res) else speakText(phrase(n), "dev")
+        if (res != 0) playRaw(res) else speakText(phrase(n), "dev", true)
     }
 
-    private fun speakText(text: String, id: String) {
+    private fun speakText(text: String, id: String, flush: Boolean) {
         val t = tts
         if (t == null || !ttsReady) {
             if (id == "dev") send("AUDIO_DONE")
             return
         }
-        val r = t.speak(text, TextToSpeech.QUEUE_FLUSH, null, id)
+        val mode = if (flush) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+        val r = t.speak(text, mode, null, id)
         if (r != TextToSpeech.SUCCESS && id == "dev") send("AUDIO_DONE")
     }
 
@@ -664,41 +735,71 @@ class MainActivity : Activity() {
         return if (Build.VERSION.SDK_INT >= 31) getSystemService(SmsManager::class.java) else SmsManager.getDefault()
     }
 
+    private fun validNumber(n: String): Boolean = n.count { it.isDigit() } >= 7
+
     private fun saveContact() {
-        prefs.edit().putString("num", contact.text.toString().trim()).apply()
+        val num = contact.text.toString().trim()
+        if (!validNumber(num)) {
+            addEntry("sys", "Hindi tama ang numero", "CONTACT")
+            announce("Hindi tama ang numero. Dapat hindi bababa sa pitong numero.")
+            return
+        }
+        prefs.edit().putString("num", num).apply()
         try {
             val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
             imm.hideSoftInputFromWindow(contact.windowToken, 0)
         } catch (_: Exception) {}
         addEntry("sys", "Na-save ang contact", "CONTACT")
-        speakText("Na-save ang contact", "local")
+        announce("Na-save ang contact")
     }
 
-    private fun smsFailed(reason: String) {
-        send("SMS_FAIL")
-        addEntry("sms", "SMS hindi naipadala: $reason", "SMS_FAIL")
+    // Ang test na SMS ay HINDI nagpapadala ng SMS_OK/SMS_FAIL sa tungkod, para hindi magsabi ng maling SOS.
+    private fun smsDone(ok: Boolean, test: Boolean, reason: String, canRetry: Boolean) {
+        if (ok) {
+            smsRetries = 0
+            if (test) {
+                addEntry("sms", "Test SMS naipadala", "SMS_OK")
+                announce("Naipadala ang test na SMS")
+            } else {
+                addEntry("sms", "SMS naipadala", "SMS_OK")
+                send("SMS_OK")
+            }
+        } else {
+            val why = if (reason.isEmpty()) "" else ": $reason"
+            if (test) {
+                addEntry("sms", "Test SMS pumalya$why", "SMS_FAIL")
+                announce("Hindi naipadala ang test na SMS$why")
+            } else {
+                addEntry("sms", "SMS pumalya$why", "SMS_FAIL")
+                send("SMS_FAIL")
+                if (canRetry && smsRetries < 3) {
+                    smsRetries++
+                    ui.postDelayed({ sendSms(false) }, 1500)
+                }
+            }
+        }
     }
 
-    private fun sendSms() {
+    private fun sendSms(test: Boolean) {
         val num = prefs.getString("num", "").orEmpty().trim()
-        if (num.count { it.isDigit() } < 7) { smsFailed("walang tamang contact"); return }
+        if (!validNumber(num)) { smsDone(false, test, "walang naka-save na contact", false); return }
         if (checkSelfPermission(Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
-            smsFailed("walang SMS permission")
+            smsDone(false, test, "walang SMS permission", false)
             requestPermissions(arrayOf(Manifest.permission.SEND_SMS), 3)
             return
         }
-        val loc = coords?.let { " https://maps.google.com/?q=$it" }.orEmpty()
-        val msg = (if (isTest) "[TEST] " else "") + "SOS! Kailangan ng tulong." + loc
+        val loc = if (test) "" else coords?.let { " https://maps.google.com/?q=$it" }.orEmpty()
+        val msg = (if (test) "[TEST] Pagsubok lang ito." else "SOS! Kailangan ng tulong.") + loc
         try {
             val sm = smsManager()
-            if (sm == null) { smsFailed("walang SMS service"); return }
+            if (sm == null) { smsDone(false, test, "walang SMS service", false); return }
+            val intent = Intent(sentAction).setPackage(packageName).putExtra("test", test)
             val pi = PendingIntent.getBroadcast(
-                this, 0, Intent(sentAction).setPackage(packageName),
+                this, if (test) 1 else 0, intent,
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             )
             sm.sendTextMessage(num, null, msg, pi, null)
         } catch (e: Exception) {
-            smsFailed(e.message ?: "error")
+            smsDone(false, test, e.message ?: "error", false)
         }
     }
-}
