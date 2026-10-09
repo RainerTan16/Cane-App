@@ -131,13 +131,13 @@ class MainActivity : Activity() {
     private fun announce(text: String) {
         ui.post {
             if (touchExploration()) rootView.announceForAccessibility(text)
-            else if (voiceGuide) speakText(text, "local", false)
+            else if (voiceGuide) speakLocal(text)
         }
     }
 
     // Sinasabi ang pangalan ng button kapag pinindot, kung walang TalkBack.
     private fun guide(label: String) {
-        if (!touchExploration() && voiceGuide) speakText(label, "local", true)
+        if (!touchExploration() && voiceGuide) speakLocal(label)
     }
 
     private fun voiceLabel(): String =
@@ -150,7 +150,7 @@ class MainActivity : Activity() {
         btnVoice.text = msg
         btnVoice.contentDescription = msg
         if (touchExploration()) rootView.announceForAccessibility(msg)
-        else speakText(msg, "local", true)
+        else speakLocal(msg)
     }
 
     // ================= UI =================
@@ -231,7 +231,8 @@ class MainActivity : Activity() {
         header.setBackgroundColor(navy)
         header.setPadding(dp(16), dp(10), dp(16), dp(10))
         val logo = ImageView(this)
-        logo.setImageResource(R.drawable.ic_launcher_foreground)
+        val logoRes = resources.getIdentifier("ic_launcher_foreground", "drawable", packageName)
+        if (logoRes != 0) logo.setImageResource(logoRes)
         hideFromReader(logo)
         header.addView(logo, LinearLayout.LayoutParams(dp(56), dp(56)))
         val title = TextView(this)
@@ -356,7 +357,7 @@ class MainActivity : Activity() {
         tc.addView(btnVoice)
         tc.addView(button("Test alert sa device", false) { testDevice() })
         tc.addView(button("Test suara", false) {
-            speakText("Pagsubok ng boses. Kung naririnig mo ito, gumagana ang tunog.", "local", false)
+            speakLocal("Pagsubok ng boses. Kung naririnig mo ito, gumagana ang tunog.")
         })
         content.addView(tc)
 
@@ -638,7 +639,6 @@ class MainActivity : Activity() {
         if (l.startsWith("AUDIO:")) {
             val n = l.substring(6).trim().toIntOrNull()
             if (n == null) {
-                send("AUDIO_DONE")
                 addEntry("sys", "Hindi maintindihan: ${l.take(40)}", "ERROR")
                 return
             }
@@ -666,10 +666,10 @@ class MainActivity : Activity() {
                 }
                 e.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(id: String?) {}
-                    override fun onDone(id: String?) { if (id == "dev") send("AUDIO_DONE") }
+                    override fun onDone(id: String?) { audioDone(id) }
                     @Deprecated("Deprecated in Java")
-                    override fun onError(id: String?) { if (id == "dev") send("AUDIO_DONE") }
-                    override fun onStop(id: String?, interrupted: Boolean) { if (id == "dev") send("AUDIO_DONE") }
+                    override fun onError(id: String?) { audioDone(id) }
+                    override fun onStop(id: String?, interrupted: Boolean) { audioDone(id) }
                 })
                 ttsReady = true
             }
@@ -677,35 +677,50 @@ class MainActivity : Activity() {
         tts = engine
     }
 
+    // "dev:31" = alerto mula sa tungkod. Sasabihin sa Arduino na tapos na ang audio 31 (AUDIO_DONE:31).
+    // Maliit na pahinga bago magsabi, para hindi maputol ang dulo sa AirPods.
+    private fun audioDone(id: String?) {
+        if (id != null && id.startsWith("dev:")) {
+            val n = id.substring(4)
+            ui.postDelayed({ send("AUDIO_DONE:$n") }, 150)
+        }
+    }
+
     // Kung may res/raw/a0008.mp3, iyon ang tutugtog. Kung wala, boses ng phone (TTS).
-    // Ang alerto mula sa tungkod ay laging may prayoridad (hindi dumadaan sa TalkBack).
     private fun speak(n: Int) {
         val res = resources.getIdentifier(String.format(Locale.US, "a%04d", n), "raw", packageName)
-        if (res != 0) playRaw(res) else speakText(phrase(n), "dev", true)
+        if (res != 0) playRaw(res, n) else speakDevice(phrase(n), n)
     }
 
-    private fun speakText(text: String, id: String, flush: Boolean) {
+    // Alerto: QUEUE_ADD lang, hindi kailanman nagpuputol ng audio na tumutugtog.
+    private fun speakDevice(text: String, n: Int) {
         val t = tts
         if (t == null || !ttsReady) {
-            if (id == "dev") send("AUDIO_DONE")
+            send("AUDIO_DONE:$n")
             return
         }
-        val mode = if (flush) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
-        val r = t.speak(text, mode, null, id)
-        if (r != TextToSpeech.SUCCESS && id == "dev") send("AUDIO_DONE")
+        val r = t.speak(text, TextToSpeech.QUEUE_ADD, null, "dev:$n")
+        if (r != TextToSpeech.SUCCESS) send("AUDIO_DONE:$n")
     }
 
-    private fun playRaw(res: Int) {
+    // Mensahe ng app (button, status). Nakapila rin ito at hindi nagpuputol ng alerto.
+    private fun speakLocal(text: String) {
+        val t = tts
+        if (t == null || !ttsReady) return
+        t.speak(text, TextToSpeech.QUEUE_ADD, null, "local")
+    }
+
+    private fun playRaw(res: Int, n: Int) {
         try {
             mp?.release()
             val p = MediaPlayer.create(this, res)
-            if (p == null) { send("AUDIO_DONE"); return }
-            p.setOnCompletionListener { send("AUDIO_DONE") }
-            p.setOnErrorListener { _, _, _ -> send("AUDIO_DONE"); true }
+            if (p == null) { send("AUDIO_DONE:$n"); return }
+            p.setOnCompletionListener { audioDone("dev:$n") }
+            p.setOnErrorListener { _, _, _ -> audioDone("dev:$n"); true }
             mp = p
             p.start()
         } catch (_: Exception) {
-            send("AUDIO_DONE")
+            send("AUDIO_DONE:$n")
         }
     }
 
@@ -803,3 +818,4 @@ class MainActivity : Activity() {
             smsDone(false, test, e.message ?: "error", false)
         }
     }
+}
