@@ -102,7 +102,10 @@ class MainActivity : Activity() {
     private var tts: TextToSpeech? = null
     @Volatile private var ttsReady = false
     private var mp: MediaPlayer? = null
-
+    private var waitingN: String? = null
+    private var devEndAt = 0L
+    private var devGiveUp = 0L
+    
     // [grupo][20cm, 50cm, 80cm] - kapareho ng sa Arduino
     private val where = arrayOf("kaliwa", "gitna", "kanan", "kaliwa at gitna", "kanan at gitna", "kanan at kaliwa", "lahat ng direksyon")
     private val table = arrayOf(
@@ -675,11 +678,29 @@ class MainActivity : Activity() {
 
     // "dev:31" = alerto mula sa tungkod. Sasabihin sa Arduino na tapos na ang audio 31 (AUDIO_DONE:31).
     // Maliit na pahinga bago magsabi, para hindi maputol ang dulo sa AirPods.
-    private fun audioDone(id: String?) {
+        // "dev:31" = alerto mula sa tungkod. Sasabihin sa Arduino na tapos na ang audio 31 (AUDIO_DONE:31).
+    // Maliit na pahinga bago magsabi, para hindi maputol ang dulo sa AirPods.
+        private fun audioDone(id: String?) {
         if (id != null && id.startsWith("dev:")) {
             val n = id.substring(4)
-            ui.postDelayed({ send("AUDIO_DONE:$n") }, 150)
+            ui.post {
+                if (waitingN != n) {
+                    waitingN = n
+                    waitQuiet(n)
+                }
+                            }
         }
+    }
+
+    private fun waitQuiet(n: String) {
+        val now = System.currentTimeMillis()
+        val speaking = try { tts?.isSpeaking == true } catch (_: Exception) { false }
+        if ((speaking || now < devEndAt) && now < devGiveUp) {
+            ui.postDelayed({ waitQuiet(n) }, 100)
+            return
+        }
+        waitingN = null
+        ui.postDelayed({ send("AUDIO_DONE:$n") }, 150)
     }
 
     // Kung may res/raw/a0008.mp3, iyon ang tutugtog. Kung wala, boses ng phone (TTS).
@@ -689,12 +710,15 @@ class MainActivity : Activity() {
     }
 
     // Alerto: QUEUE_ADD lang, hindi kailanman nagpuputol ng audio na tumutugtog.
-    private fun speakDevice(text: String, n: Int) {
+       private fun speakDevice(text: String, n: Int) {
         val t = tts
         if (t == null || !ttsReady) {
             send("AUDIO_DONE:$n")
             return
         }
+        val now = System.currentTimeMillis()
+        devEndAt = now + 300 + 70L * text.length
+        devGiveUp = now + 7000
         val r = t.speak(text, TextToSpeech.QUEUE_ADD, null, "dev:$n")
         if (r != TextToSpeech.SUCCESS) send("AUDIO_DONE:$n")
     }
