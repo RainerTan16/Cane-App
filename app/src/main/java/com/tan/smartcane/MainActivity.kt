@@ -355,9 +355,9 @@ class MainActivity : Activity() {
         tc.addView(sectionTitle("TUNOG AT PAGSUBOK"))
         btnVoice = button(voiceLabel(), false, false) { toggleVoice() }
         tc.addView(btnVoice)
-        tc.addView(button("Test alert sa device", false) { testDevice() })
-        tc.addView(button("Test suara", false) {
-            speakLocal("Pagsubok ng boses. Kung naririnig mo ito, gumagana ang tunog.")
+       // tc.addView(button("Test alert sa device", false) { testDevice() })
+        //tc.addView(button("Test suara", false) {
+            //speakLocal("Pagsubok ng boses. Kung naririnig mo ito, gumagana ang tunog.")
         })
         content.addView(tc)
 
