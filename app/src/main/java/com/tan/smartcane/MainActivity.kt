@@ -756,7 +756,7 @@ class MainActivity : Activity() {
         val num = contact.text.toString().trim()
         if (!validNumber(num)) {
             addEntry("sys", "Hindi tama ang numero", "CONTACT")
-            announce("Hindi tama ang numero. Dapat hindi bababa sa pitong numero.")
+            announce("Hindi tama ang numero. Dapat hindi bababa sa labing isang numero.")
             return
         }
         prefs.edit().putString("num", num).apply()
