@@ -352,12 +352,10 @@ class MainActivity : Activity() {
 
         // --- Tunog at pagsubok ---
         val tc = card()
-        tc.addView(sectionTitle("TUNOG AT PAGSUBOK"))
+        tc.addView(sectionTitle("TUNOG"))
         btnVoice = button(voiceLabel(), false, false) { toggleVoice() }
         tc.addView(btnVoice)
-       // tc.addView(button("Test alert sa device", false) { testDevice() })
-        //tc.addView(button("Test suara", false) {
-            //speakLocal("Pagsubok ng boses. Kung naririnig mo ito, gumagana ang tunog.")
+        content.addView(tc)
         })
         content.addView(tc)
 
