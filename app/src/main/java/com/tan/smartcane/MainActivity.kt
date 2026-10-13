@@ -37,6 +37,7 @@ class MainActivity : Activity() {
     private var coords: String? = null
     private var retries = 0
     private var isTest = false
+    private var locMsg: String? = null   // location SMS na ipapadala pagkatapos ma-send ang SOS
 
     // ---------- LOCATION NG PHONE ----------
     // Walang laman ang listener: sapat na na may humihiling ng updates para laging bago ang lastKnownLocation.
@@ -84,7 +85,7 @@ class MainActivity : Activity() {
     private val smsResult = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
             if (resultCode == RESULT_OK) {
-                retries = 0; send("SMS_OK"); note("SMS naipadala")
+                retries = 0; send("SMS_OK"); note("SMS naipadala"); sendLocation()
             } else {
                 send("SMS_FAIL"); note("SMS pumalya")
                 if (!isTest && retries++ < 3) ui.postDelayed({ sendSms() }, 1500)
@@ -224,19 +225,29 @@ class MainActivity : Activity() {
         val phone = if (coords == null) bestLocation() else null
         val c = coords ?: phone?.let { "%.6f,%.6f".format(Locale.US, it.latitude, it.longitude) }
         val ageMin = phone?.let { (System.currentTimeMillis() - it.time) / 60000 } ?: 0L
-        val loc = when {
-            c == null -> " (location unavailable)"
-            ageMin >= 2 -> " https://maps.google.com/?q=$c (last known, $ageMin min ago)"
-            else -> " https://maps.google.com/?q=$c"
-        }
-        if (c == null) note("Walang location (i-on ang Location at payagan ang permission)") else note("Location: $c")
-        val msg = (if (isTest) "[TEST] " else "") + "SOS! I need help." + loc
+        val tag = if (isTest) "[TEST] " else ""
+// Hiwalay na SMS ang location, plain coordinates (walang link) para hindi ma-block ng telco.
+locMsg = c?.let { tag + "Location: $it" + (if (ageMin >= 2) " (last known, $ageMin min ago)" else "") }
+if (c == null) note("Walang location (i-on ang Location at payagan ang permission)") else note("Location: $c")
+val msg = tag + "SOS! I need help."
         val pi = PendingIntent.getBroadcast(this, 0, Intent(sentAction).setPackage(packageName),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         try {
             getSystemService(SmsManager::class.java).sendTextMessage(num, null, msg, pi, null)
         } catch (e: Exception) { send("SMS_FAIL"); note("Error: ${e.message}") }
     }
+
+    // Ipadala ang location bilang hiwalay na SMS, pagkatapos lang ma-send ang SOS. Hindi nito naaapektuhan ang SOS.
+private fun sendLocation() {
+    val m = locMsg ?: return
+    locMsg = null
+    val num = prefs.getString("num", "").orEmpty()
+    if (num.isBlank()) return
+    try {
+        getSystemService(SmsManager::class.java).sendTextMessage(num, null, m, null, null)
+        note("Location SMS naipadala")
+    } catch (e: Exception) { note("Location SMS error: ${e.message}") }
+}
 
     // Arduino -> "AUDIO:0016". Una subukan ang res/raw/a0016.mp3, kung wala, gagamitin ang TTS.
     private fun playAudio(n: Int) {
