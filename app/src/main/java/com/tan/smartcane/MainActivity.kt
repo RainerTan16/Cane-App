@@ -9,10 +9,14 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
 import android.content.*
 import android.content.pm.PackageManager
+import android.media.MediaPlayer
 import android.os.*
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.telephony.SmsManager
 import android.text.InputType
 import android.widget.*
+import java.util.Locale
 import java.util.UUID
 import kotlin.concurrent.thread
 
@@ -30,6 +34,33 @@ class MainActivity : Activity() {
     private var coords: String? = null
     private var retries = 0
     private var isTest = false
+
+    // ---------- AUDIO ----------
+    private var tts: TextToSpeech? = null
+    private var ttsReady = false
+    private var player: MediaPlayer? = null
+
+    // Pareho ng OBSTACLE_AUDIO table sa Arduino: [grupo][20cm, 50cm, 80cm]
+    private val obstacleAudio = arrayOf(
+        intArrayOf(15, 8, 1), intArrayOf(16, 9, 2), intArrayOf(17, 10, 3), intArrayOf(18, 11, 4),
+        intArrayOf(19, 12, 5), intArrayOf(20, 13, 6), intArrayOf(21, 14, 7)
+    )
+    private val groupText = listOf("left", "front", "right", "left and front", "right and front", "left and right", "all sides")
+    private val zoneText = listOf("very close", "close", "ahead")
+
+    // Number ng audio -> sasabihin ng phone. Pwede mong palitan ang mga salita dito.
+    private val phrases: Map<Int, String> = buildMap {
+        for (g in 0..6) for (z in 0..2) put(obstacleAudio[g][z], "Obstacle on the ${groupText[g]}, ${zoneText[z]}")
+        put(24, "Going uphill")
+        put(25, "Going downhill")
+        put(28, "Flat ground")
+        put(29, "Stairs going down")
+        put(30, "Stairs going up")
+        put(31, "Hole ahead")
+        put(40, "Emergency message sent")
+        put(41, "Message failed. Trying again")
+        put(42, "Smart Cane connected")
+    }
 
     // Flowchart: Send successfully? Yes -> audio 0040 (SMS_OK). No -> audio 0041 (SMS_FAIL), delay 1-2 sec, retry.
     private val smsResult = object : BroadcastReceiver() {
@@ -76,6 +107,16 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 31) p += Manifest.permission.BLUETOOTH_CONNECT
         requestPermissions(p.toTypedArray(), 1)
         loadDevices()
+
+        tts = TextToSpeech(this) { st ->
+            if (st == TextToSpeech.SUCCESS) { tts?.language = Locale.US; ttsReady = true }
+            else note("TTS hindi gumana (i-install ang Text-to-speech engine)")
+        }
+        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(id: String?) {}
+            override fun onDone(id: String?) { audioDone() }
+            override fun onError(id: String?) { audioDone() }
+        })
     }
 
     override fun onRequestPermissionsResult(rc: Int, p: Array<out String>, r: IntArray) = loadDevices()
@@ -110,7 +151,10 @@ class MainActivity : Activity() {
     // ESP32 -> app: "SOS" or "SOS:lat,lng"
     private fun handle(l: String) {
         note("ESP32: $l")
-        if (l.startsWith("SOS")) {
+        if (l.startsWith("AUDIO:")) {
+            val n = l.substringAfter(':').trim().toIntOrNull()
+            if (n != null) ui.post { playAudio(n) }
+        } else if (l.startsWith("SOS")) {
             coords = l.substringAfter(':', "").ifBlank { null }
             isTest = false; retries = 0
             ui.post { sendSms() }
@@ -131,6 +175,32 @@ class MainActivity : Activity() {
         } catch (e: Exception) { send("SMS_FAIL"); note("Error: ${e.message}") }
     }
 
+    // Arduino -> "AUDIO:0016". Una subukan ang res/raw/a0016.mp3, kung wala, gagamitin ang TTS.
+    private fun playAudio(n: Int) {
+        val resId = resources.getIdentifier("a%04d".format(n), "raw", packageName)
+        if (resId != 0) {
+            val mp = MediaPlayer.create(this, resId)
+            if (mp != null) {
+                player?.release()
+                player = mp
+                mp.setOnCompletionListener { audioDone() }
+                mp.setOnErrorListener { _, _, _ -> audioDone(); true }
+                mp.start()
+                return
+            }
+        }
+        val text = phrases[n]
+        if (text != null && ttsReady) {
+            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "a$n")
+        } else {
+            note("Walang audio/TTS para sa $n")
+            audioDone()
+        }
+    }
+
+    // Sabihin sa Arduino na tapos na ang audio para makapag-play ito ng susunod.
+    private fun audioDone() { send("AUDIO_DONE") }
+
     private fun send(s: String) = thread {
         try { socket?.outputStream?.apply { write((s + "\n").toByteArray()); flush() } } catch (_: Exception) {}
     }
@@ -139,6 +209,8 @@ class MainActivity : Activity() {
     private fun note(s: String) { ui.post { log.text = "$s\n${log.text}" } }
 
     override fun onDestroy() {
-        super.onDestroy(); unregisterReceiver(smsResult); try { socket?.close() } catch (_: Exception) {}
+        super.onDestroy(); unregisterReceiver(smsResult)
+        tts?.shutdown(); player?.release()
+        try { socket?.close() } catch (_: Exception) {}
     }
 }
