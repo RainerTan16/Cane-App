@@ -9,6 +9,9 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
 import android.content.*
 import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.media.MediaPlayer
 import android.os.*
 import android.speech.tts.TextToSpeech
@@ -34,6 +37,18 @@ class MainActivity : Activity() {
     private var coords: String? = null
     private var retries = 0
     private var isTest = false
+
+    // ---------- LOCATION NG PHONE ----------
+    // Walang laman ang listener: sapat na na may humihiling ng updates para laging bago ang lastKnownLocation.
+    // Ipinatupad lahat ng method para hindi mag-crash sa Android 10 pababa.
+    private var locStarted = false
+    private val locListener = object : LocationListener {
+        override fun onLocationChanged(location: Location) {}
+        @Deprecated("Deprecated in Java")
+        override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+        override fun onProviderEnabled(provider: String) {}
+        override fun onProviderDisabled(provider: String) {}
+    }
 
     // ---------- AUDIO ----------
     // false = DFPlayer sa Arduino ang tutugtog ng audio (phone hindi mag-p-play).
@@ -96,7 +111,7 @@ class MainActivity : Activity() {
             addView(btn("Save Contact") {
                 prefs.edit().putString("num", contact.text.toString().trim()).apply(); note("Saved Contact")
             })
-            addView(btn("Test SMS") { isTest = true; sendSms() })
+            addView(btn("Test SMS") { isTest = true; coords = null; sendSms() })
             addView(btn("Test alert sa device") { send("TEST") })
             addView(log)
         }
@@ -108,8 +123,11 @@ class MainActivity : Activity() {
 
         val p = mutableListOf(Manifest.permission.SEND_SMS)
         if (Build.VERSION.SDK_INT >= 31) p += Manifest.permission.BLUETOOTH_CONNECT
+        p += Manifest.permission.ACCESS_FINE_LOCATION
+        p += Manifest.permission.ACCESS_COARSE_LOCATION
         requestPermissions(p.toTypedArray(), 1)
         loadDevices()
+        startLocation()
 
         tts = TextToSpeech(this) { st ->
             if (st == TextToSpeech.SUCCESS) { tts?.language = Locale.US; ttsReady = true }
@@ -122,7 +140,40 @@ class MainActivity : Activity() {
         })
     }
 
-    override fun onRequestPermissionsResult(rc: Int, p: Array<out String>, r: IntArray) = loadDevices()
+    override fun onRequestPermissionsResult(rc: Int, p: Array<out String>, r: IntArray) {
+        loadDevices()
+        startLocation()
+    }
+
+    // Simulan ang location updates ng phone (GPS + network). Ligtas tawagin nang paulit-ulit.
+    @SuppressLint("MissingPermission")
+    private fun startLocation() {
+        if (locStarted) return
+        val lm = getSystemService(LocationManager::class.java) ?: return
+        for (prov in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
+            try {
+                if (lm.allProviders.contains(prov)) {
+                    lm.requestLocationUpdates(prov, 5000L, 0f, locListener, Looper.getMainLooper())
+                    locStarted = true
+                }
+            } catch (_: Exception) {}   // walang permission pa, o walang ganitong provider
+        }
+    }
+
+    // Pinakabagong kilalang location mula sa GPS / network / passive. null kung wala.
+    @SuppressLint("MissingPermission")
+    private fun bestLocation(): Location? {
+        val lm = getSystemService(LocationManager::class.java) ?: return null
+        var best: Location? = null
+        for (prov in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)) {
+            try {
+                val l = lm.getLastKnownLocation(prov) ?: continue
+                val b = best
+                if (b == null || l.time > b.time) best = l
+            } catch (_: Exception) {}
+        }
+        return best
+    }
 
     @SuppressLint("MissingPermission")
     private fun loadDevices() {
@@ -169,7 +220,16 @@ class MainActivity : Activity() {
         if (num.isBlank() || checkSelfPermission(Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
             send("SMS_FAIL"); note("Walang contact o SMS permission"); return
         }
-        val loc = coords?.let { " https://maps.google.com/?q=$it" }.orEmpty()
+        // Location: kung may galing sa ESP32 (SOS:lat,lng) gamitin iyon, kung wala, gamitin ang location ng phone.
+        val phone = if (coords == null) bestLocation() else null
+        val c = coords ?: phone?.let { "%.6f,%.6f".format(Locale.US, it.latitude, it.longitude) }
+        val ageMin = phone?.let { (System.currentTimeMillis() - it.time) / 60000 } ?: 0L
+        val loc = when {
+            c == null -> " (location unavailable)"
+            ageMin >= 2 -> " https://maps.google.com/?q=$c (last known, $ageMin min ago)"
+            else -> " https://maps.google.com/?q=$c"
+        }
+        if (c == null) note("Walang location (i-on ang Location at payagan ang permission)") else note("Location: $c")
         val msg = (if (isTest) "[TEST] " else "") + "SOS! I need help." + loc
         val pi = PendingIntent.getBroadcast(this, 0, Intent(sentAction).setPackage(packageName),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
@@ -214,6 +274,7 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         super.onDestroy(); unregisterReceiver(smsResult)
         tts?.shutdown(); player?.release()
+        try { getSystemService(LocationManager::class.java)?.removeUpdates(locListener) } catch (_: Exception) {}
         try { socket?.close() } catch (_: Exception) {}
     }
 }
