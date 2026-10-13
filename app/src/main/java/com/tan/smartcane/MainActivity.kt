@@ -38,7 +38,7 @@ class MainActivity : Activity() {
     // ---------- AUDIO ----------
     // false = DFPlayer sa Arduino ang tutugtog ng audio (phone hindi mag-p-play).
     // true  = phone ang tutugtog (TTS o res/raw).
-    private val phoneAudio = false
+    private val phoneAudio = true
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private var player: MediaPlayer? = null
