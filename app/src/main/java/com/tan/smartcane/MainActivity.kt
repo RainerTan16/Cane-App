@@ -36,6 +36,9 @@ class MainActivity : Activity() {
     private var isTest = false
 
     // ---------- AUDIO ----------
+    // false = DFPlayer sa Arduino ang tutugtog ng audio (phone hindi mag-p-play).
+    // true  = phone ang tutugtog (TTS o res/raw).
+    private val phoneAudio = false
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private var player: MediaPlayer? = null
@@ -153,7 +156,7 @@ class MainActivity : Activity() {
         note("ESP32: $l")
         if (l.startsWith("AUDIO:")) {
             val n = l.substringAfter(':').trim().toIntOrNull()
-            if (n != null) ui.post { playAudio(n) }
+            if (n != null && phoneAudio) ui.post { playAudio(n) }
         } else if (l.startsWith("SOS")) {
             coords = l.substringAfter(':', "").ifBlank { null }
             isTest = false; retries = 0
