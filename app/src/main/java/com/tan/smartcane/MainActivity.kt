@@ -92,9 +92,9 @@ class MainActivity : Activity() {
     private val smsResult = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
             if (resultCode == RESULT_OK) {
-                retries = 0; send("SMS_OK"); note("SMS naipadala"); sendLocation()
+                retries = 0; send("SMS_OK"); note("SMS sent succesfully"); sendLocation()
             } else {
-                send("SMS_FAIL"); note("SMS pumalya")
+                send("SMS_FAIL"); note("SMS not succesfully)
                 if (!isTest && retries++ < 10) ui.postDelayed({ sendSms() }, 1500)
             }
         }
@@ -107,7 +107,7 @@ class MainActivity : Activity() {
         fun btn(t: String, f: () -> Unit) = Button(this).apply { text = t; textSize = 20f; setOnClickListener { f() } }
         status = TextView(this).apply { text = "Hindi nakakonekta"; textSize = 22f }
         contact = EditText(this).apply {
-            hint = "Numero ng emergency contact"; textSize = 20f
+            hint = "Number of emergency contact"; textSize = 20f
             inputType = InputType.TYPE_CLASS_PHONE; setText(prefs.getString("num", ""))
         }
         spinner = Spinner(this)
@@ -120,8 +120,8 @@ class MainActivity : Activity() {
             addView(btn("Save Contact") {
                 prefs.edit().putString("num", contact.text.toString().trim()).apply(); note("Saved Contact")
             })
-            addView(btn("Test SMS") { isTest = true; coords = null; sendSms() })
-            addView(btn("Test alert sa device") { send("TEST") })
+            //addView(btn("Test SMS") { isTest = true; coords = null; sendSms() })
+           // addView(btn("Test alert sa device") { send("TEST") })
             addView(log)
         }
         setContentView(ScrollView(this).apply { addView(root) })
@@ -201,7 +201,7 @@ class MainActivity : Activity() {
     // ---------- BLUETOOTH: connect + auto-reconnect ----------
     private fun connectSelected() {
         val d = devices.getOrNull(spinner.selectedItemPosition)
-            ?: return note("Walang napiling device (i-pair muna sa Settings)")
+            ?: return note("No device (pair in Settings)")
         connectTo(d)
     }
 
@@ -231,13 +231,13 @@ class MainActivity : Activity() {
                     val s = dev.createRfcommSocketToServiceRecord(spp)
                     socket = s
                     s.connect()
-                    say("Nakakonekta: ${dev.name}")
+                    say("Connected: ${dev.name}")
                     send("APP_CONNECTED")
                     val r = s.inputStream.bufferedReader()
                     while (true) handle((r.readLine() ?: break).trim())
                 } catch (e: Exception) { note("Error: ${e.message}") }
                 try { socket?.close() } catch (_: Exception) {}
-                if (running) { say("Nadiskonekta, sumusubok ulit..."); Thread.sleep(3000) }
+                if (running) { say("Disconnected, Try again..."); Thread.sleep(3000) }
             }
             running = false
         }
@@ -261,16 +261,16 @@ class MainActivity : Activity() {
     private fun sendSms() {
         val num = prefs.getString("num", "").orEmpty()
         if (num.isBlank() || checkSelfPermission(Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
-            send("SMS_FAIL"); note("Walang contact o SMS permission"); return
+            send("SMS_FAIL"); note("No contact or SMS permission"); return
         }
         // Location: kung may galing sa ESP32 (SOS:lat,lng) gamitin iyon, kung wala, gamitin ang location ng phone.
         val phone = if (coords == null) bestLocation() else null
         val c = coords ?: phone?.let { "%.6f,%.6f".format(Locale.US, it.latitude, it.longitude) }
         val ageMin = phone?.let { (System.currentTimeMillis() - it.time) / 60000 } ?: 0L
-        val tag = if (isTest) "[TEST] " else ""
+        val tag = if (isTest) "" else ""
         // Hiwalay na SMS ang location, plain coordinates (walang link) para hindi ma-block ng telco.
         locMsg = c?.let { tag + "Location: $it" + (if (ageMin >= 2) " (last known, $ageMin min ago)" else "") }
-        if (c == null) note("Walang location (i-on ang Location at payagan ang permission)") else note("Location: $c")
+        if (c == null) note("No location (Please on Location and give the permission)") else note("Location: $c")
         val msg = tag + "SOS! I need help."
         val pi = PendingIntent.getBroadcast(this, 0, Intent(sentAction).setPackage(packageName),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
@@ -287,7 +287,7 @@ class MainActivity : Activity() {
         if (num.isBlank()) return
         try {
             sms().sendTextMessage(num, null, m, null, null)
-            note("Location SMS naipadala")
+            note("Location SMS sent succesfully")
         } catch (e: Exception) { note("Location SMS error: ${e.message}") }
     }
 
@@ -309,7 +309,7 @@ class MainActivity : Activity() {
         if (text != null && ttsReady) {
             tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "a$n")
         } else {
-            note("Walang audio/TTS para sa $n")
+            note("No audio/TTS para sa $n")
             audioDone()
         }
     }
