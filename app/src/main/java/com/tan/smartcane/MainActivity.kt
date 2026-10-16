@@ -18,6 +18,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.telephony.SmsManager
 import android.text.InputType
+import android.view.WindowManager
 import android.widget.*
 import java.util.Locale
 import java.util.UUID
@@ -33,15 +34,15 @@ class MainActivity : Activity() {
     private lateinit var contact: EditText
     private lateinit var spinner: Spinner
     private var devices = listOf<BluetoothDevice>()
-    private var socket: BluetoothSocket? = null
+    @Volatile private var socket: BluetoothSocket? = null
+    @Volatile private var target: BluetoothDevice? = null   // device na kokonektahan
+    @Volatile private var running = false                   // tumatakbo ang connect/reconnect loop
     private var coords: String? = null
     private var retries = 0
     private var isTest = false
     private var locMsg: String? = null   // location SMS na ipapadala pagkatapos ma-send ang SOS
 
     // ---------- LOCATION NG PHONE ----------
-    // Walang laman ang listener: sapat na na may humihiling ng updates para laging bago ang lastKnownLocation.
-    // Ipinatupad lahat ng method para hindi mag-crash sa Android 10 pababa.
     private var locStarted = false
     private val locListener = object : LocationListener {
         override fun onLocationChanged(location: Location) {}
@@ -67,7 +68,7 @@ class MainActivity : Activity() {
     private val groupText = listOf("left", "front", "right", "left and front", "right and front", "left and right", "all sides")
     private val zoneText = listOf("very close", "close", "ahead")
 
-    // Number ng audio -> sasabihin ng phone. Pwede mong palitan ang mga salita dito.
+    // Number ng audio -> sasabihin ng phone kung walang res/raw/aXXXX.mp3. Pwede mong palitan ang mga salita dito.
     private val phrases: Map<Int, String> = buildMap {
         for (g in 0..6) for (z in 0..2) put(obstacleAudio[g][z], "Obstacle on the ${groupText[g]}, ${zoneText[z]}")
         put(24, "Going uphill")
@@ -79,7 +80,13 @@ class MainActivity : Activity() {
         put(40, "Emergency message sent")
         put(41, "Message failed. Trying again")
         put(42, "Smart Cane connected")
+        put(43, "Low battery")
     }
+
+    // SmsManager: getSystemService(SmsManager) ay gumagana lang sa Android 12 pataas
+    private fun sms(): SmsManager =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) getSystemService(SmsManager::class.java)
+        else @Suppress("DEPRECATION") SmsManager.getDefault()
 
     // Flowchart: Send successfully? Yes -> audio 0040 (SMS_OK). No -> audio 0041 (SMS_FAIL), delay 1-2 sec, retry.
     private val smsResult = object : BroadcastReceiver() {
@@ -88,13 +95,14 @@ class MainActivity : Activity() {
                 retries = 0; send("SMS_OK"); note("SMS naipadala"); sendLocation()
             } else {
                 send("SMS_FAIL"); note("SMS pumalya")
-                if (!isTest && retries++ < 3) ui.postDelayed({ sendSms() }, 1500)
+                if (!isTest && retries++ < 10) ui.postDelayed({ sendSms() }, 1500)
             }
         }
     }
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)   // para hindi mag-sleep ang app habang gamit
         prefs = getSharedPreferences("cfg", MODE_PRIVATE)
         fun btn(t: String, f: () -> Unit) = Button(this).apply { text = t; textSize = 20f; setOnClickListener { f() } }
         status = TextView(this).apply { text = "Hindi nakakonekta"; textSize = 22f }
@@ -107,7 +115,7 @@ class MainActivity : Activity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding(40, 40, 40, 40)
             addView(status); addView(spinner)
-            addView(btn("Connected Smart Cane") { connect() })
+            addView(btn("Connected Smart Cane") { connectSelected() })
             addView(contact)
             addView(btn("Save Contact") {
                 prefs.edit().putString("num", contact.text.toString().trim()).apply(); note("Saved Contact")
@@ -131,19 +139,23 @@ class MainActivity : Activity() {
         startLocation()
 
         tts = TextToSpeech(this) { st ->
-            if (st == TextToSpeech.SUCCESS) { tts?.language = Locale.US; ttsReady = true }
-            else note("TTS hindi gumana (i-install ang Text-to-speech engine)")
+            if (st == TextToSpeech.SUCCESS) {
+                tts?.language = Locale.US
+                tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(id: String?) {}
+                    override fun onDone(id: String?) { audioDone() }
+                    @Deprecated("Deprecated in Java")
+                    override fun onError(id: String?) { audioDone() }
+                })
+                ttsReady = true
+            } else note("TTS hindi gumana (i-install ang Text-to-speech engine)")
         }
-        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(id: String?) {}
-            override fun onDone(id: String?) { audioDone() }
-            override fun onError(id: String?) { audioDone() }
-        })
     }
 
     override fun onRequestPermissionsResult(rc: Int, p: Array<out String>, r: IntArray) {
         loadDevices()
         startLocation()
+        autoConnect()
     }
 
     // Simulan ang location updates ng phone (GPS + network). Ligtas tawagin nang paulit-ulit.
@@ -186,24 +198,52 @@ class MainActivity : Activity() {
         } catch (_: SecurityException) {}
     }
 
+    // ---------- BLUETOOTH: connect + auto-reconnect ----------
+    private fun connectSelected() {
+        val d = devices.getOrNull(spinner.selectedItemPosition)
+            ?: return note("Walang napiling device (i-pair muna sa Settings)")
+        connectTo(d)
+    }
+
+    // Kokonekta sa huling ginamit na device pagbukas ng app
+    private fun autoConnect() {
+        val a = prefs.getString("dev", null) ?: return
+        val i = devices.indexOfFirst { it.address == a }
+        if (i < 0) return
+        spinner.setSelection(i)
+        connectTo(devices[i])
+    }
+
     @SuppressLint("MissingPermission")
-    private fun connect() {
-        val d = devices.getOrNull(spinner.selectedItemPosition) ?: return note("Walang napiling device (i-pair muna sa Settings)")
+    private fun connectTo(d: BluetoothDevice) {
+        prefs.edit().putString("dev", d.address).apply()
+        val changed = target?.address != d.address
+        target = d
+        if (running) {                       // may tumatakbo na: huwag gumawa ng pangalawang thread
+            if (changed) { try { socket?.close() } catch (_: Exception) {} }
+            return
+        }
+        running = true
         thread {
-            try {
-                socket?.close()
-                val s = d.createRfcommSocketToServiceRecord(spp)
-                s.connect(); socket = s
-                say("Nakakonekta: ${d.name}")
-                send("APP_CONNECTED")
-                val r = s.inputStream.bufferedReader()
-                while (true) handle((r.readLine() ?: break).trim())
-            } catch (e: Exception) { note("Error: ${e.message}") }
-            say("Nadiskonekta")
+            while (running) {
+                val dev = target ?: break
+                try {
+                    val s = dev.createRfcommSocketToServiceRecord(spp)
+                    socket = s
+                    s.connect()
+                    say("Nakakonekta: ${dev.name}")
+                    send("APP_CONNECTED")
+                    val r = s.inputStream.bufferedReader()
+                    while (true) handle((r.readLine() ?: break).trim())
+                } catch (e: Exception) { note("Error: ${e.message}") }
+                try { socket?.close() } catch (_: Exception) {}
+                if (running) { say("Nadiskonekta, sumusubok ulit..."); Thread.sleep(3000) }
+            }
+            running = false
         }
     }
 
-    // ESP32 -> app: "SOS" or "SOS:lat,lng"
+    // ESP32/Arduino -> app: "AUDIO:0016", "SOS" or "SOS:lat,lng", "HELLO"
     private fun handle(l: String) {
         note("ESP32: $l")
         if (l.startsWith("AUDIO:")) {
@@ -213,6 +253,8 @@ class MainActivity : Activity() {
             coords = l.substringAfter(':', "").ifBlank { null }
             isTest = false; retries = 0
             ui.post { sendSms() }
+        } else if (l == "HELLO") {
+            send("APP_CONNECTED")            // nag-reset ang Arduino: i-initialize ulit
         }
     }
 
@@ -226,28 +268,28 @@ class MainActivity : Activity() {
         val c = coords ?: phone?.let { "%.6f,%.6f".format(Locale.US, it.latitude, it.longitude) }
         val ageMin = phone?.let { (System.currentTimeMillis() - it.time) / 60000 } ?: 0L
         val tag = if (isTest) "[TEST] " else ""
-// Hiwalay na SMS ang location, plain coordinates (walang link) para hindi ma-block ng telco.
-locMsg = c?.let { tag + "Location: $it" + (if (ageMin >= 2) " (last known, $ageMin min ago)" else "") }
-if (c == null) note("Walang location (i-on ang Location at payagan ang permission)") else note("Location: $c")
-val msg = tag + "SOS! I need help."
+        // Hiwalay na SMS ang location, plain coordinates (walang link) para hindi ma-block ng telco.
+        locMsg = c?.let { tag + "Location: $it" + (if (ageMin >= 2) " (last known, $ageMin min ago)" else "") }
+        if (c == null) note("Walang location (i-on ang Location at payagan ang permission)") else note("Location: $c")
+        val msg = tag + "SOS! I need help."
         val pi = PendingIntent.getBroadcast(this, 0, Intent(sentAction).setPackage(packageName),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         try {
-            getSystemService(SmsManager::class.java).sendTextMessage(num, null, msg, pi, null)
+            sms().sendTextMessage(num, null, msg, pi, null)
         } catch (e: Exception) { send("SMS_FAIL"); note("Error: ${e.message}") }
     }
 
     // Ipadala ang location bilang hiwalay na SMS, pagkatapos lang ma-send ang SOS. Hindi nito naaapektuhan ang SOS.
-private fun sendLocation() {
-    val m = locMsg ?: return
-    locMsg = null
-    val num = prefs.getString("num", "").orEmpty()
-    if (num.isBlank()) return
-    try {
-        getSystemService(SmsManager::class.java).sendTextMessage(num, null, m, null, null)
-        note("Location SMS naipadala")
-    } catch (e: Exception) { note("Location SMS error: ${e.message}") }
-}
+    private fun sendLocation() {
+        val m = locMsg ?: return
+        locMsg = null
+        val num = prefs.getString("num", "").orEmpty()
+        if (num.isBlank()) return
+        try {
+            sms().sendTextMessage(num, null, m, null, null)
+            note("Location SMS naipadala")
+        } catch (e: Exception) { note("Location SMS error: ${e.message}") }
+    }
 
     // Arduino -> "AUDIO:0016". Una subukan ang res/raw/a0016.mp3, kung wala, gagamitin ang TTS.
     private fun playAudio(n: Int) {
@@ -280,10 +322,12 @@ private fun sendLocation() {
     }
 
     private fun say(s: String) { ui.post { status.text = s } }
-    private fun note(s: String) { ui.post { log.text = "$s\n${log.text}" } }
+    private fun note(s: String) { ui.post { log.text = ("$s\n${log.text}").take(3000) } }   // limitado para hindi lumaki nang lumaki
 
     override fun onDestroy() {
-        super.onDestroy(); unregisterReceiver(smsResult)
+        super.onDestroy()
+        running = false
+        unregisterReceiver(smsResult)
         tts?.shutdown(); player?.release()
         try { getSystemService(LocationManager::class.java)?.removeUpdates(locListener) } catch (_: Exception) {}
         try { socket?.close() } catch (_: Exception) {}
