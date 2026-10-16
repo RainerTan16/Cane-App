@@ -18,6 +18,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.telephony.SmsManager
 import android.text.InputType
+import android.view.View
 import android.view.WindowManager
 import android.widget.*
 import java.util.Locale
@@ -92,9 +93,9 @@ class MainActivity : Activity() {
     private val smsResult = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
             if (resultCode == RESULT_OK) {
-                retries = 0; send("SMS_OK"); note("SMS sent succesfully"); sendLocation()
+                retries = 0; send("SMS_OK"); note("SMS sent successfully"); sendLocation()
             } else {
-                send("SMS_FAIL"); note("SMS not succesfully")
+                send("SMS_FAIL"); note("SMS failed")
                 if (!isTest && retries++ < 10) ui.postDelayed({ sendSms() }, 1500)
             }
         }
@@ -105,23 +106,39 @@ class MainActivity : Activity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)   // para hindi mag-sleep ang app habang gamit
         prefs = getSharedPreferences("cfg", MODE_PRIVATE)
         fun btn(t: String, f: () -> Unit) = Button(this).apply { text = t; textSize = 20f; setOnClickListener { f() } }
-        status = TextView(this).apply { text = "Hindi nakakonekta"; textSize = 22f }
+        fun label(t: String) = TextView(this).apply { text = t; textSize = 16f }
+        // TalkBack: babasahin nang kusa kapag nagbago ang status (tingnan ang say())
+        status = TextView(this).apply {
+            text = "Not connected"; textSize = 22f
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        }
+        spinner = Spinner(this).apply { id = View.generateViewId() }
         contact = EditText(this).apply {
-            hint = "Number of emergency contact"; textSize = 20f
+            id = View.generateViewId()
+            textSize = 20f
             inputType = InputType.TYPE_CLASS_PHONE; setText(prefs.getString("num", ""))
         }
-        spinner = Spinner(this)
-        log = TextView(this).apply { textSize = 14f }
+        // TalkBack: ang label ang babasahin kasama ng spinner at ng input box
+        val lblDevice = label("Bluetooth device").apply { labelFor = spinner.id }
+        val lblContact = label("Emergency contact number").apply { labelFor = contact.id }
+        log = TextView(this).apply {
+            textSize = 14f
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO   // debug log: laktawan ng TalkBack
+        }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding(40, 40, 40, 40)
-            addView(status); addView(spinner)
-            addView(btn("Connected Smart Cane") { connectSelected() })
-            addView(contact)
+            addView(status); addView(lblDevice); addView(spinner)
+            addView(btn("Connect to Smart Cane") { connectSelected() })
+            addView(lblContact); addView(contact)
             addView(btn("Save Contact") {
-                prefs.edit().putString("num", contact.text.toString().trim()).apply(); note("Saved Contact")
+                val n = contact.text.toString().trim()
+                prefs.edit().putString("num", n).apply()
+                note("Saved Contact")
+                // Toast: binabasa ng TalkBack, at nakikita ng lahat
+                Toast.makeText(this@MainActivity, if (n.isBlank()) "Contact cleared" else "Contact saved", Toast.LENGTH_SHORT).show()
             })
             //addView(btn("Test SMS") { isTest = true; coords = null; sendSms() })
-           // addView(btn("Test alert sa device") { send("TEST") })
+            //addView(btn("Test alert sa device") { send("TEST") })
             addView(log)
         }
         setContentView(ScrollView(this).apply { addView(root) })
@@ -148,7 +165,7 @@ class MainActivity : Activity() {
                     override fun onError(id: String?) { audioDone() }
                 })
                 ttsReady = true
-            } else note("TTS hindi gumana (i-install ang Text-to-speech engine)")
+            } else note("TTS not working (install a Text-to-speech engine)")
         }
     }
 
@@ -231,7 +248,7 @@ class MainActivity : Activity() {
                     val s = dev.createRfcommSocketToServiceRecord(spp)
                     socket = s
                     s.connect()
-                    say("Connected: ${dev.name}")
+                    say("Connected: ${dev.name}", announce = false)   // audio 0042 ang nagsasabi na nito, iwas dobleng boses
                     send("APP_CONNECTED")
                     val r = s.inputStream.bufferedReader()
                     while (true) handle((r.readLine() ?: break).trim())
@@ -267,10 +284,10 @@ class MainActivity : Activity() {
         val phone = if (coords == null) bestLocation() else null
         val c = coords ?: phone?.let { "%.6f,%.6f".format(Locale.US, it.latitude, it.longitude) }
         val ageMin = phone?.let { (System.currentTimeMillis() - it.time) / 60000 } ?: 0L
-        val tag = if (isTest) "" else ""
+        val tag = if (isTest) "[TEST] " else ""
         // Hiwalay na SMS ang location, plain coordinates (walang link) para hindi ma-block ng telco.
         locMsg = c?.let { tag + "Location: $it" + (if (ageMin >= 2) " (last known, $ageMin min ago)" else "") }
-        if (c == null) note("No location (Please on Location and give the permission)") else note("Location: $c")
+        if (c == null) note("No location (turn on Location and allow the permission)") else note("Location: $c")
         val msg = tag + "SOS! I need help."
         val pi = PendingIntent.getBroadcast(this, 0, Intent(sentAction).setPackage(packageName),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
@@ -287,7 +304,7 @@ class MainActivity : Activity() {
         if (num.isBlank()) return
         try {
             sms().sendTextMessage(num, null, m, null, null)
-            note("Location SMS sent succesfully")
+            note("Location SMS sent successfully")
         } catch (e: Exception) { note("Location SMS error: ${e.message}") }
     }
 
@@ -309,7 +326,7 @@ class MainActivity : Activity() {
         if (text != null && ttsReady) {
             tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "a$n")
         } else {
-            note("No audio/TTS para sa $n")
+            note("No audio/TTS for $n")
             audioDone()
         }
     }
@@ -321,7 +338,15 @@ class MainActivity : Activity() {
         try { socket?.outputStream?.apply { write((s + "\n").toByteArray()); flush() } } catch (_: Exception) {}
     }
 
-    private fun say(s: String) { ui.post { status.text = s } }
+    // announce = false: hindi babasahin ng TalkBack ang pagbabago. Walang update kung pareho ang text (iwas paulit-ulit na basa).
+    private fun say(s: String, announce: Boolean = true) {
+        ui.post {
+            if (status.text.toString() == s) return@post
+            status.accessibilityLiveRegion =
+                if (announce) View.ACCESSIBILITY_LIVE_REGION_POLITE else View.ACCESSIBILITY_LIVE_REGION_NONE
+            status.text = s
+        }
+    }
     private fun note(s: String) { ui.post { log.text = ("$s\n${log.text}").take(3000) } }   // limitado para hindi lumaki nang lumaki
 
     override fun onDestroy() {
