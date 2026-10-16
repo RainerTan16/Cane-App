@@ -94,7 +94,7 @@ class MainActivity : Activity() {
             if (resultCode == RESULT_OK) {
                 retries = 0; send("SMS_OK"); note("SMS sent succesfully"); sendLocation()
             } else {
-                send("SMS_FAIL"); note("SMS not succesfully)
+                send("SMS_FAIL"); note("SMS not succesfully")
                 if (!isTest && retries++ < 10) ui.postDelayed({ sendSms() }, 1500)
             }
         }
