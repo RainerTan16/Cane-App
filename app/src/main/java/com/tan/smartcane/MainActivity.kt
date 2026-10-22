@@ -41,6 +41,7 @@ class MainActivity : Activity() {
     @Volatile private var target: BluetoothDevice? = null   // device na kokonektahan
     @Volatile private var running = false                   // tumatakbo ang connect/reconnect loop
     @Volatile private var lastSosMs = 0L
+    private var lastTestMs = 0L              // huling pindot ng Test SMS button (iwas dobleng padala)
     private var coords: String? = null
     private var retries = 0
     private var isTest = false
@@ -103,8 +104,10 @@ class MainActivity : Activity() {
         override fun onReceive(c: Context, i: Intent) {
             if (resultCode == RESULT_OK) {
                 retries = 0; send("SMS_OK"); note("SMS sent successfully"); sendLocation()
+                if (isTest) toast("Test SMS sent")
             } else {
                 send("SMS_FAIL"); note("SMS failed")
+                if (isTest) toast("Test SMS failed")
                 if (!isTest && retries++ < 10) scheduleRetry()
             }
         }
@@ -144,6 +147,7 @@ class MainActivity : Activity() {
                 note("Saved Contact")
                 Toast.makeText(this@MainActivity, if (n.isBlank()) "Contact cleared" else "Contact saved", Toast.LENGTH_SHORT).show()
             })
+            addView(btn("Send Test SMS") { testSms() })
             addView(log)
         }
         setContentView(ScrollView(this).apply { addView(root) })
@@ -315,6 +319,29 @@ class MainActivity : Activity() {
         } else if (l == "HELLO") {
             send("APP_CONNECTED")            // nag-reset ang Arduino: i-initialize ulit
         }
+    }
+
+    // ---------- TEST SMS ----------
+    private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
+
+    // Test button: pareho ng totoong SOS pero may "[TEST] " tag, walang retry, at gumagamit ng location ng phone.
+    private fun testSms() {
+        val now = SystemClock.elapsedRealtime()
+        // Huwag gambalain ang totoong SOS (retry / paghihintay ng location, hanggang ~3 minuto)
+        if (lastSosMs != 0L && now - lastSosMs < 180_000) return toast("Real SOS in progress. Try again later")
+        if (now - lastTestMs < 10_000) return toast("Please wait a few seconds")
+        val saved = prefs.getString("num", "").orEmpty()
+        if (saved.isBlank()) return toast("Save the emergency contact first")
+        if (contact.text.toString().trim() != saved) return toast("Press Save Contact first")
+        if (checkSelfPermission(Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.SEND_SMS), 1)
+            return toast("Allow the SMS permission, then try again")
+        }
+        lastTestMs = now
+        coords = null; isTest = true; retries = 0   // coords = null: huwag gamitin ang lumang coords ng ESP32
+        cancelRetry(); locWaitId++
+        toast("Sending test SMS")
+        sendSms()
     }
 
     // ---------- SMS ----------
