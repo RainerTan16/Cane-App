@@ -223,9 +223,12 @@ class MainActivity : Activity() {
         return if (a == null) b else if (b == null) a else if (b.time > a.time) b else a
     }
 
+    // Google Maps link na pipindutin sa SMS (kusang nagiging clickable)
+    private fun mapsLink(latLng: String) = "https://maps.google.com/?q=$latLng"
+
     private fun locationText(l: Location): String {
         val ageMin = (System.currentTimeMillis() - l.time) / 60000
-        return "Location: " + "%.6f,%.6f".format(Locale.US, l.latitude, l.longitude) +
+        return "Location: " + mapsLink("%.6f,%.6f".format(Locale.US, l.latitude, l.longitude)) +
             (if (ageMin >= 2) " (last known, $ageMin min ago)" else "")
     }
 
@@ -363,7 +366,7 @@ class MainActivity : Activity() {
         val tag = if (isTest) "[TEST] " else ""
         val phone = if (coords == null) currentLocation() else null
         locMsg = when {
-            coords != null -> tag + "Location: $coords"
+            coords != null -> tag + "Location: " + mapsLink("$coords")
             phone != null  -> tag + locationText(phone)
             else           -> null
         }
