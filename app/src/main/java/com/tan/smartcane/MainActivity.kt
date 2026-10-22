@@ -46,6 +46,7 @@ class MainActivity : Activity() {
     private var retries = 0
     private var isTest = false
     private var locMsg: String? = null       // location SMS na ipapadala pagkatapos ma-send ang SOS
+    private var locLink: String? = null      // hiwalay na SMS na Google Maps link (maaaring i-block ng telco)
     private var retryRun: Runnable? = null   // nakaabang na retry ng SOS
     private var locWaitId = 0                // pang-cancel ng paghihintay sa location
 
@@ -223,12 +224,12 @@ class MainActivity : Activity() {
         return if (a == null) b else if (b == null) a else if (b.time > a.time) b else a
     }
 
-    // Google Maps link na pipindutin sa SMS (kusang nagiging clickable)
     private fun mapsLink(latLng: String) = "https://maps.google.com/?q=$latLng"
+    private fun latLng(l: Location) = "%.6f,%.6f".format(Locale.US, l.latitude, l.longitude)
 
     private fun locationText(l: Location): String {
         val ageMin = (System.currentTimeMillis() - l.time) / 60000
-        return "Location: " + mapsLink("%.6f,%.6f".format(Locale.US, l.latitude, l.longitude)) +
+        return "Location: " + latLng(l) +
             (if (ageMin >= 2) " (last known, $ageMin min ago)" else "")
     }
 
@@ -366,8 +367,13 @@ class MainActivity : Activity() {
         val tag = if (isTest) "[TEST] " else ""
         val phone = if (coords == null) currentLocation() else null
         locMsg = when {
-            coords != null -> tag + "Location: " + mapsLink("$coords")
+            coords != null -> tag + "Location: $coords"
             phone != null  -> tag + locationText(phone)
+            else           -> null
+        }
+        locLink = when {
+            coords != null -> tag + "Map: " + mapsLink("$coords")
+            phone != null  -> tag + "Map: " + mapsLink(latLng(phone))
             else           -> null
         }
         note(locMsg ?: "No location yet (will keep trying after SOS is sent)")
@@ -384,17 +390,24 @@ class MainActivity : Activity() {
     private fun sendLocation() {
         locWaitId++
         val m = locMsg
-        locMsg = null
-        if (m != null) smsPlain(m)
+        val k = locLink
+        locMsg = null; locLink = null
+        if (m != null) smsLocation(m, k)
         else waitForLocation(locWaitId, 12, if (isTest) "[TEST] " else "")
     }
 
     private fun waitForLocation(id: Int, tries: Int, tag: String) {
         if (id != locWaitId) return                 // may bagong SOS na
         val l = currentLocation()
-        if (l != null) { smsPlain(tag + locationText(l)); return }
+        if (l != null) { smsLocation(tag + locationText(l), tag + "Map: " + mapsLink(latLng(l))); return }
         if (tries <= 0) { note("No location found"); return }
         ui.postDelayed({ waitForLocation(id, tries - 1, tag) }, 5000)
+    }
+
+    // Coordinates muna (plain text, laging dumadaan), tapos hiwalay na link. Kung ma-block ang link, buo pa rin ang coordinates.
+    private fun smsLocation(coordsMsg: String, link: String?) {
+        smsPlain(coordsMsg)
+        if (link != null) smsPlain(link)
     }
 
     private fun smsPlain(m: String) {
